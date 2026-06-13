@@ -112,6 +112,17 @@ func normPath(p string) string {
 	return p
 }
 
+// parentCollection returns the collection path for an item path by dropping the
+// last segment: "/vlans-ports/58-41" -> "/vlans-ports", "/vlans/58" -> "/vlans".
+// Returns "" for a top-level singleton (no parent).
+func parentCollection(p string) string {
+	i := strings.LastIndex(p, "/")
+	if i <= 0 {
+		return ""
+	}
+	return p[:i]
+}
+
 func (r *objectResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var m objectModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &m)...)
@@ -125,9 +136,21 @@ func (r *objectResource) Create(ctx context.Context, req resource.CreateRequest,
 	}
 	var err error
 	if !m.CreatePath.IsNull() && m.CreatePath.ValueString() != "" {
+		// Explicit collection POST (e.g. /vlans).
 		_, err = r.client.Post(normPath(m.CreatePath.ValueString()), body)
 	} else {
-		_, err = r.client.Put(normPath(m.Path.ValueString()), body)
+		// Idempotent PUT to the item path; if the item doesn't exist yet
+		// (AOS-S replies 404 to PUT on a not-yet-present collection item, e.g.
+		// a new vlans-ports membership), fall back to POSTing the parent
+		// collection. This makes the generic resource handle both upsert-PUT
+		// singletons and POST-create collections without an explicit create_path.
+		p := normPath(m.Path.ValueString())
+		_, err = r.client.Put(p, body)
+		if err != nil && aos.NotFound(err) {
+			if parent := parentCollection(p); parent != "" {
+				_, err = r.client.Post(parent, body)
+			}
+		}
 	}
 	if err != nil {
 		resp.Diagnostics.AddError("AOS-S create failed", err.Error())

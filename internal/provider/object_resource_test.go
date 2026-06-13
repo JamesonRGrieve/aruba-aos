@@ -81,6 +81,20 @@ func TestNormPath(t *testing.T) {
 	}
 }
 
+func TestParentCollection(t *testing.T) {
+	for in, want := range map[string]string{
+		"/vlans-ports/58-41":               "/vlans-ports",
+		"/vlans/58":                        "/vlans",
+		"/vlans/81/ipaddresses/IAAM-1.2.3": "/vlans/81/ipaddresses",
+		"/stp":                             "",
+		"/system":                          "",
+	} {
+		if got := parentCollection(in); got != want {
+			t.Errorf("parentCollection(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestCompactJSON(t *testing.T) {
 	out, err := compactJSON([]byte("{\n \"b\": 2,\n \"a\": 1\n}"))
 	if err != nil {
