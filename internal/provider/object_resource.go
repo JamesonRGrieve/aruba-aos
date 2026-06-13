@@ -66,24 +66,19 @@ func (r *objectResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 			},
 			"create_path": schema.StringAttribute{
 				Optional: true,
-				Computed: true, // Computed so the operationalAttr modifier may keep prior state on an existing resource.
 				MarkdownDescription: "Collection path to POST to on create (e.g. `vlans` while `path` is `vlans/40`). " +
-					"When unset, create is an idempotent PUT to `path`. Create-time only — changing it on an " +
-					"existing resource is ignored (no replace), and it is not populated on import.",
-				PlanModifiers: []planmodifier.String{operationalAttr{}},
+					"When unset, create is an idempotent PUT to `path`. Carry it in the import id " +
+					"(`<path>|<create_path>`) so an imported resource matches config and lands at 0-diff.",
 			},
 			"delete_method": schema.StringAttribute{
 				Optional: true,
-				Computed: true,
 				MarkdownDescription: "How to destroy: `DELETE` (default), `PUT` (send `delete_body` to `path` — " +
-					"reset a singleton to default), or `NONE` (no-op for un-deletable singletons). Destroy-time only.",
-				PlanModifiers: []planmodifier.String{operationalAttr{}},
+					"reset a singleton to default), or `NONE` (no-op for un-deletable singletons). Carry it in the " +
+					"import id (`<path>|<create_path>|<delete_method>`) to match config.",
 			},
 			"delete_body": schema.StringAttribute{
 				Optional:            true,
-				Computed:            true,
-				MarkdownDescription: "JSON body PUT to `path` on destroy when `delete_method = \"PUT\"`. Destroy-time only.",
-				PlanModifiers:       []planmodifier.String{operationalAttr{}},
+				MarkdownDescription: "JSON body PUT to `path` on destroy when `delete_method = \"PUT\"`. Import id field 4.",
 			},
 			"body": schema.StringAttribute{
 				Required: true,
@@ -139,24 +134,9 @@ func (r *objectResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 	m.ID = m.Path
-	normalizeOperational(&m)
 	// Store the declared body verbatim so the create plan/state are consistent;
 	// the next refresh (Read) replaces it with the full device object.
 	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
-}
-
-// normalizeOperational resolves the Computed create/delete hints to concrete
-// values (unknown -> null) so State.Set never leaves a Computed attr unknown.
-func normalizeOperational(m *objectModel) {
-	if m.CreatePath.IsUnknown() {
-		m.CreatePath = types.StringNull()
-	}
-	if m.DeleteMethod.IsUnknown() {
-		m.DeleteMethod = types.StringNull()
-	}
-	if m.DeleteBody.IsUnknown() {
-		m.DeleteBody = types.StringNull()
-	}
 }
 
 func (r *objectResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -202,7 +182,6 @@ func (r *objectResource) Update(ctx context.Context, req resource.UpdateRequest,
 		return
 	}
 	m.ID = m.Path
-	normalizeOperational(&m)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
 }
 
@@ -238,41 +217,27 @@ func (r *objectResource) Delete(ctx context.Context, req resource.DeleteRequest,
 }
 
 func (r *objectResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	// Import id is the resource path. Body is populated on the following Read.
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("path"), req.ID)...)
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
-	// Seed a placeholder body so the framework has a value before Read runs.
+	// Import id is a pipe-delimited tuple so the imported state matches the
+	// config's operational hints exactly (→ 0-diff, no spurious update/replace):
+	//   <path>[|<create_path>[|<delete_method>[|<delete_body>]]]
+	// Empty fields are treated as null. Body is populated on the following Read.
+	parts := strings.Split(req.ID, "|")
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("path"), parts[0])...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), parts[0])...)
+	setOpt := func(p string, i int) {
+		if i < len(parts) && parts[i] != "" {
+			resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root(p), parts[i])...)
+		} else {
+			resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root(p), types.StringNull())...)
+		}
+	}
+	setOpt("create_path", 1)
+	setOpt("delete_method", 2)
+	setOpt("delete_body", 3)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("body"), "{}")...)
 }
 
 // ---------------------------------------------------------------------------
-// operationalAttr marks a create/delete-time hint (create_path, delete_method,
-// delete_body). These never reflect device state, so once the resource exists
-// (prior state has an id) they must not produce drift — keep the prior state
-// value. On create (no prior id) the configured value is used as-is; on import
-// (id set, hint null) the null is kept, so importing never forces a spurious
-// update or replace.
-type operationalAttr struct{}
-
-func (operationalAttr) Description(context.Context) string {
-	return "Create/delete-time hint: ignored (keeps prior state) once the resource exists."
-}
-func (operationalAttr) MarkdownDescription(ctx context.Context) string {
-	return (operationalAttr{}).Description(ctx)
-}
-
-func (operationalAttr) PlanModifyString(ctx context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
-	var id types.String
-	diags := req.State.GetAttribute(ctx, path.Root("id"), &id)
-	if diags.HasError() {
-		return
-	}
-	if !id.IsNull() && !id.IsUnknown() && id.ValueString() != "" {
-		// Resource already exists — these hints are irrelevant to drift.
-		resp.PlanValue = req.StateValue
-	}
-}
-
 // subset plan modifier — suppress diff when every declared key already matches
 // the full device object held in prior state. This is what lets a subset
 // `body` import/refresh to 0-diff without clobbering unmanaged device fields.
