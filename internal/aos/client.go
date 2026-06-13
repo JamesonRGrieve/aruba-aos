@@ -119,18 +119,34 @@ func (c *Client) login() error {
 	return nil
 }
 
-// ensureSession logs in if there is no cookie yet.
-func (c *Client) ensureSession() error {
-	if c.cookie == "" {
-		return c.login()
+// loginRetry logs in, retrying with backoff on HTTP 503 "no free REST sessions"
+// — AOS-S caps concurrent REST sessions very low (≈5), so a slot may need a
+// moment to free (idle sessions time out). Caller must hold c.mu.
+func (c *Client) loginRetry() error {
+	delays := []time.Duration{0, 3 * time.Second, 6 * time.Second, 12 * time.Second, 20 * time.Second, 30 * time.Second}
+	var last error
+	for _, d := range delays {
+		if d > 0 {
+			time.Sleep(d)
+		}
+		err := c.login()
+		if err == nil {
+			return nil
+		}
+		var ae *APIError
+		if e, ok := err.(*APIError); ok {
+			ae = e
+		}
+		if ae == nil || ae.Status != http.StatusServiceUnavailable {
+			return err // not a session-pressure error — fail fast
+		}
+		last = err
 	}
-	return nil
+	return fmt.Errorf("aos login: exhausted retries waiting for a free REST session: %w", last)
 }
 
-// Logout tears down the session. Best-effort; errors are ignored.
-func (c *Client) Logout() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+// logoutLocked tears down the current session. Caller must hold c.mu.
+func (c *Client) logoutLocked() {
 	if c.cookie == "" {
 		return
 	}
@@ -144,23 +160,34 @@ func (c *Client) Logout() {
 	c.cookie = ""
 }
 
-// do performs one authenticated request, re-authenticating once on a 401/403
-// (the session may have expired). path is relative to /rest/v8 and must start
-// with "/". body may be nil.
+// Logout tears down the session. Best-effort; errors are ignored.
+func (c *Client) Logout() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.logoutLocked()
+}
+
+// do performs one authenticated request and ALWAYS releases the session
+// afterwards (login → request → logout, under the mutex). AOS-S allows only a
+// handful of concurrent REST sessions, so holding one across a long Terraform
+// run (or leaking one per run) exhausts the cap; acquiring and releasing per
+// operation keeps at most one session live and never leaks. path is relative to
+// /rest/v8 and must start with "/". body may be nil.
 func (c *Client) do(method, path string, body []byte) ([]byte, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if err := c.ensureSession(); err != nil {
+	if err := c.loginRetry(); err != nil {
 		return nil, err
 	}
+	defer c.logoutLocked()
 	raw, status, err := c.attempt(method, path, body)
 	if err != nil {
 		return nil, err
 	}
 	if status == http.StatusUnauthorized || status == http.StatusForbidden {
-		// Session likely expired — re-login once and retry.
+		// Session rejected — re-login once and retry.
 		c.cookie = ""
-		if err := c.login(); err != nil {
+		if err := c.loginRetry(); err != nil {
 			return nil, err
 		}
 		raw, status, err = c.attempt(method, path, body)
