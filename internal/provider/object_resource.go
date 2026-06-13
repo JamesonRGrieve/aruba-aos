@@ -66,6 +66,7 @@ func (r *objectResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 			},
 			"create_path": schema.StringAttribute{
 				Optional: true,
+				Computed: true, // Computed so the operationalAttr modifier may keep prior state on an existing resource.
 				MarkdownDescription: "Collection path to POST to on create (e.g. `vlans` while `path` is `vlans/40`). " +
 					"When unset, create is an idempotent PUT to `path`. Create-time only — changing it on an " +
 					"existing resource is ignored (no replace), and it is not populated on import.",
@@ -73,12 +74,14 @@ func (r *objectResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 			},
 			"delete_method": schema.StringAttribute{
 				Optional: true,
+				Computed: true,
 				MarkdownDescription: "How to destroy: `DELETE` (default), `PUT` (send `delete_body` to `path` — " +
 					"reset a singleton to default), or `NONE` (no-op for un-deletable singletons). Destroy-time only.",
 				PlanModifiers: []planmodifier.String{operationalAttr{}},
 			},
 			"delete_body": schema.StringAttribute{
 				Optional:            true,
+				Computed:            true,
 				MarkdownDescription: "JSON body PUT to `path` on destroy when `delete_method = \"PUT\"`. Destroy-time only.",
 				PlanModifiers:       []planmodifier.String{operationalAttr{}},
 			},
@@ -136,9 +139,24 @@ func (r *objectResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 	m.ID = m.Path
+	normalizeOperational(&m)
 	// Store the declared body verbatim so the create plan/state are consistent;
 	// the next refresh (Read) replaces it with the full device object.
 	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
+}
+
+// normalizeOperational resolves the Computed create/delete hints to concrete
+// values (unknown -> null) so State.Set never leaves a Computed attr unknown.
+func normalizeOperational(m *objectModel) {
+	if m.CreatePath.IsUnknown() {
+		m.CreatePath = types.StringNull()
+	}
+	if m.DeleteMethod.IsUnknown() {
+		m.DeleteMethod = types.StringNull()
+	}
+	if m.DeleteBody.IsUnknown() {
+		m.DeleteBody = types.StringNull()
+	}
 }
 
 func (r *objectResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -184,6 +202,7 @@ func (r *objectResource) Update(ctx context.Context, req resource.UpdateRequest,
 		return
 	}
 	m.ID = m.Path
+	normalizeOperational(&m)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
 }
 
