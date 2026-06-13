@@ -22,7 +22,7 @@
       "exit_criteria": "house-aruba-2530 resources import to 0-diff through the provider.",
       "items": [
         { "number": "2.1", "feature": "Provider installable on the Semaphore runner (filesystem_mirror + scoped .terraformrc); tofu init verified (plan task 116: 139 add/0 change/0 destroy)", "done": true },
-        { "number": "2.2", "feature": "Live import to 0-diff proven: full house-aruba-2530 model -> tofu plan = N to import, 0 change", "done": false },
+        { "number": "2.2", "feature": "Live import to 0-diff proven: house-aruba-2530 imported + applied -> tofu plan = No changes (task 125)", "done": true },
         { "number": "2.3", "feature": "Acceptance tests (TF_ACC) against a throwaway/lab AOS-S", "done": false }
       ]
     },
@@ -33,7 +33,7 @@
       "items": [
         { "number": "3.1", "feature": "required_providers + arubaos provider; vlan/vlan_port(tagged)/trunk_member/vlan_ip(OOB SVI)/stp converted to arubaos_object; shell_script + scripts/ removed. Validated; runner plan 139 add/0 change. (system hostname/gateway deferred — PUT /system whole-object replace would wipe the gateway)", "done": true },
         { "number": "3.2", "feature": "Remaining feature resources (system/snmp/dns/ntp/syslog/lldp/dhcp-snoop/stp_port). No native NetBox schema yet -> need config_context modeling or typed sugar first", "done": false },
-        { "number": "3.3", "feature": "house-aruba-2530 imported + onboarded to 0-diff via Semaphore (OOB_NET SVI created, HOME_HOSTS on 58)", "done": false }
+        { "number": "3.3", "feature": "house-aruba-2530 onboarded to 0-diff via Semaphore: VLAN 58/81 created, OOB_NET SVI .8.72/26, HOME_HOSTS->58 (additive; VLAN 59 retained), renames applied. tofu plan = No changes", "done": true }
       ]
     },
     {
